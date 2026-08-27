@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Resume Screening App</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=4">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <!-- PDF.js UMD build: real text extraction. The worker needs an http(s)
          origin, so serve this directory rather than opening the file directly. -->
@@ -336,11 +336,16 @@
     </div>
 
     <!-- Load order matters: scoring defines the shared skill vocabulary that
-         resume-parser consumes, and script.js wires all of it to the UI. -->
-    <script src="scoring.js"></script>
-    <script src="pdf-extract.js"></script>
-    <script src="resume-parser.js"></script>
-    <script src="test-data.js"></script>
-    <script src="script.js"></script>
+         resume-parser consumes, and script.js wires all of it to the UI.
+
+         The ?v= query busts caches on deploy. GitHub Pages serves assets with a
+         ten-minute max-age, so without it a tester keeps running the previous
+         build after an update and reports bugs that are already fixed. Bump the
+         number whenever these files change. -->
+    <script src="scoring.js?v=4"></script>
+    <script src="pdf-extract.js?v=4"></script>
+    <script src="resume-parser.js?v=4"></script>
+    <script src="test-data.js?v=4"></script>
+    <script src="script.js?v=4"></script>
 </body>
 </html>
