@@ -7,14 +7,38 @@
 // needs a real HTTP origin, so the app must be served over http://, not opened
 // as a file:// URL.
 
-// Configure the worker as soon as the library is available.
+const PDF_WORKER_URL =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// Point PDF.js at a worker it is actually allowed to start.
+//
+// A classic Worker script must be same-origin: `new Worker(cdnUrl)` throws
+// SecurityError no matter what CORS headers the CDN sends. Handing the CDN URL
+// straight to PDF.js therefore fails everywhere except a same-origin host, and
+// it fails *quietly* -- PDF.js falls back to parsing on the main thread, which
+// still works but blocks the UI and drags a large batch out. On GitHub Pages a
+// 67-page file froze the tab.
+//
+// The fix is a same-origin Blob whose only job is to importScripts the real
+// worker. importScripts *is* permitted cross-origin when the response carries
+// CORS headers, which cdnjs does.
 (function configureWorker() {
     if (typeof pdfjsLib === 'undefined') {
         console.error('PDF.js failed to load; PDF extraction is unavailable.');
         return;
     }
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    try {
+        const shim = 'importScripts(' + JSON.stringify(PDF_WORKER_URL) + ');';
+        const blob = new Blob([shim], { type: 'application/javascript' });
+        pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+    } catch (err) {
+        // No Blob/URL support: let PDF.js use the CDN URL and fall back to its
+        // main-thread parser rather than failing outright.
+        console.warn('Could not create a same-origin PDF worker shim; ' +
+            'extraction will run on the main thread.', err);
+        pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+    }
 })();
 
 // Typed error so callers can show a message that means something.
@@ -29,8 +53,33 @@ PdfExtractError.prototype = Object.create(Error.prototype);
 // A document with essentially no extractable text is almost always a scan.
 const MIN_DOCUMENT_CHARS = 50;
 
-// Yield to the event loop every few pages so a large PDF does not lock the tab.
-const PAGES_PER_YIELD = 5;
+// Yield to the event loop after every page so a large PDF does not lock the tab.
+//
+// Even with the parser in a worker, receiving each page's text items costs real
+// main-thread time (structured-clone deserialisation of thousands of glyph
+// records).
+const PAGES_PER_YIELD = 1;
+
+// Hand control back to the browser for one macrotask.
+//
+// Deliberately not setTimeout: background and hidden tabs clamp timers to about
+// one second, so a per-page setTimeout(0) turned a 6s extraction into 13s the
+// moment the tab lost focus. MessageChannel yields a real macrotask -- letting
+// rendering and input through -- without being subject to that clamp.
+function yieldToEventLoop() {
+    return new Promise(resolve => {
+        if (typeof MessageChannel === 'undefined') {
+            setTimeout(resolve, 0);
+            return;
+        }
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+            channel.port1.close();
+            resolve();
+        };
+        channel.port2.postMessage(0);
+    });
+}
 
 // Rebuild lines from positioned text fragments.
 //
@@ -192,7 +241,7 @@ async function extractPdfPages(file, onProgress) {
         if (typeof onProgress === 'function') onProgress(pageNum, pdf.numPages);
 
         if (pageNum % PAGES_PER_YIELD === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
+            await yieldToEventLoop();
         }
     }
 
