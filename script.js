@@ -995,12 +995,21 @@ function loadSampleData() {
         return;
     }
 
-    candidates = enhancedTestCandidates.map((c, i) => Object.assign({}, c, {
-        id: i + 1,
-        status: 'pending',
-        email: c.email || '',
-        phone: c.phone || ''
-    }));
+    // The fixtures never pass through parseCandidates(), so derive the fields
+    // the table and detail view expect rather than leaving them undefined.
+    candidates = enhancedTestCandidates.map((c, i) => {
+        const level = detectEducationLevel(c.education, { education: c.education });
+        return Object.assign({}, c, {
+            id: i + 1,
+            status: 'pending',
+            email: c.email || '',
+            phone: c.phone || '',
+            headline: c.headline || extractHeadline(c.resumeText || '', c.name),
+            educationLevel: level,
+            educationSummary: summariseEducation(c.education, level),
+            experienceSource: 'stated'
+        });
+    });
 
     if (!jobDescriptionText.trim() && typeof testJobDescriptions !== 'undefined') {
         jobDescriptionText = testJobDescriptions.fullstack;
