@@ -866,3 +866,194 @@ textarea:focus {
     color: #0c5460;
     border: 1px solid #bee5eb;
 }
+/* ---------------------------------------------------------------------------
+   Additions for real PDF parsing: sortable columns, bulk actions, error state,
+   resume preview and the sample-data hint.
+   --------------------------------------------------------------------------- */
+
+/* A processing stage that failed, alongside the existing .success state. */
+.processing-status.error {
+    color: #dc3545;
+}
+
+/* Sortable column headers */
+.candidates-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.candidates-table th.sortable:hover {
+    background: #eef1f4;
+}
+
+.candidates-table th.sortable:focus-visible {
+    outline: 2px solid #667eea;
+    outline-offset: -2px;
+}
+
+.candidates-table th.sortable .sort-icon {
+    margin-left: 6px;
+    font-size: 0.8rem;
+    opacity: 0.35;
+}
+
+.candidates-table th.sortable.sorted {
+    color: #667eea;
+}
+
+.candidates-table th.sortable.sorted .sort-icon {
+    opacity: 1;
+}
+
+/* Placeholder row when nothing matches the filters */
+.candidates-table td.empty-row {
+    padding: 40px 15px;
+    text-align: center;
+    color: #888;
+    font-style: italic;
+}
+
+/* Bulk status buttons in the screening toolbar */
+.btn-small-action {
+    background: #fff;
+    color: #495057;
+    border: 1px solid #ced4da;
+    padding: 10px 16px;
+    font-size: 0.9rem;
+}
+
+.btn-small-action:hover {
+    background: #f1f3f5;
+    color: #212529;
+}
+
+/* Resume preview modal: a contact summary line above the extracted text */
+.resume-meta {
+    margin: 0 0 15px 0;
+    padding: 12px 15px;
+    background: #eef1f4;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    color: #495057;
+    white-space: normal;
+}
+
+.resume-text {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+/* Sample-data hint under the upload step */
+.demo-hint {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 0.9rem;
+    color: #6c757d;
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-weight: 600;
+    color: #667eea;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.btn-link:hover {
+    color: #4c51bf;
+}
+
+/* ---------------------------------------------------------------------------
+   Requirement review panel. Requirement terms are read from the job
+   description, so they must be visible and correctable before anyone trusts a
+   score built on them.
+   --------------------------------------------------------------------------- */
+
+.requirements-panel {
+    margin-top: 20px;
+    padding: 22px 25px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 15px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+}
+
+.requirements-header h4 {
+    margin: 0 0 6px 0;
+    font-size: 1.05rem;
+    color: #333;
+}
+
+.requirements-hint {
+    display: block;
+    font-size: 0.85rem;
+    color: #6c757d;
+    line-height: 1.5;
+}
+
+.requirement-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 16px 0 12px 0;
+}
+
+.requirement-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px 5px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: 1px solid transparent;
+}
+
+/* Recognised technology: confident. */
+.requirement-chip.source-vocabulary {
+    background: #eef0fd;
+    color: #3c366b;
+    border-color: #d5d9f7;
+}
+
+/* Read straight out of the description: needs a human eye. */
+.requirement-chip.source-jd {
+    background: #fff7e6;
+    color: #7a4f01;
+    border-color: #ffe0a3;
+}
+
+.chip-remove {
+    background: none;
+    border: none;
+    padding: 0 2px;
+    font-size: 1.05rem;
+    line-height: 1;
+    cursor: pointer;
+    color: inherit;
+    opacity: 0.55;
+}
+
+.chip-remove:hover {
+    opacity: 1;
+}
+
+.chip-remove:focus-visible {
+    outline: 2px solid #667eea;
+    border-radius: 50%;
+}
+
+.requirements-meta {
+    margin: 0;
+    font-size: 0.82rem;
+    color: #6c757d;
+    line-height: 1.5;
+}

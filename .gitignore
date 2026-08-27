@@ -1,0 +1,6 @@
+# Resume and job-description files used for local testing.
+# Real batches contain candidate personal data -- never commit them.
+*.pdf
+*.docx
+jd-*.txt
+batch*.txt

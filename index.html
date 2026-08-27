@@ -6,8 +6,9 @@
     <title>Resume Screening App</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf2pic/2.1.4/pdf2pic.min.js"></script>
+    <!-- PDF.js UMD build: real text extraction. The worker needs an http(s)
+         origin, so serve this directory rather than opening the file directly. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
@@ -83,6 +84,13 @@
                     <i class="fas fa-arrow-right"></i> Process Documents
                 </button>
             </div>
+
+            <p class="demo-hint">
+                No PDF to hand?
+                <button class="btn-link" onclick="loadSampleData()">Load sample data</button>
+                to explore the screening table with fixtures. Demo data only &mdash;
+                processing a real PDF never falls back to it.
+            </p>
         </div>
 
         <!-- Step 2: Processing -->
@@ -152,13 +160,29 @@
                         </div>
                         <div class="stat">
                             <div class="stat-number" id="keywordCount">0</div>
-                            <div class="stat-label">Keywords Extracted</div>
+                            <div class="stat-label">Requirements Detected</div>
                         </div>
                         <div class="stat">
                             <div class="stat-number" id="avgScore">0%</div>
                             <div class="stat-label">Average Match Score</div>
                         </div>
                     </div>
+                </div>
+
+                <!-- What the scores are actually based on. Terms are read from
+                     the job description, so the reviewer can see and correct
+                     them before trusting any score. -->
+                <div class="requirements-panel" id="requirementsPanel" style="display: none;">
+                    <div class="requirements-header">
+                        <h4>Requirements read from the job description</h4>
+                        <span class="requirements-hint">
+                            Scores are based on these terms. Click &times; to drop
+                            anything that is not a skill &mdash; an organisation
+                            name, say &mdash; and the scores recompute.
+                        </span>
+                    </div>
+                    <div class="requirement-chips" id="requirementChips"></div>
+                    <p class="requirements-meta" id="requirementsMeta"></p>
                 </div>
             </div>
 
@@ -190,6 +214,12 @@
                     </div>
                 </div>
                 <div class="controls-right">
+                    <button class="btn btn-small-action" onclick="bulkUpdateStatus('cleared')" title="Clear all checked candidates">
+                        <i class="fas fa-check"></i> Clear Selected
+                    </button>
+                    <button class="btn btn-small-action" onclick="bulkUpdateStatus('rejected')" title="Reject all checked candidates">
+                        <i class="fas fa-times"></i> Reject Selected
+                    </button>
                     <button class="btn btn-success" onclick="exportClearedCandidates()">
                         <i class="fas fa-download"></i> Export Cleared
                     </button>
@@ -201,13 +231,13 @@
                 <table class="candidates-table" id="candidatesTable">
                     <thead>
                         <tr>
-                            <th><input type="checkbox" id="selectAll"></th>
-                            <th>Candidate Name</th>
-                            <th>Experience</th>
-                            <th>Education</th>
+                            <th><input type="checkbox" id="selectAll" aria-label="Select all candidates"></th>
+                            <th class="sortable" data-sort-key="name" tabindex="0" role="button" aria-sort="none">Candidate Name <i class="fas fa-sort sort-icon"></i></th>
+                            <th class="sortable" data-sort-key="experience" tabindex="0" role="button" aria-sort="none">Experience <i class="fas fa-sort sort-icon"></i></th>
+                            <th class="sortable" data-sort-key="education" tabindex="0" role="button" aria-sort="none">Education <i class="fas fa-sort sort-icon"></i></th>
                             <th>Key Skills</th>
-                            <th>AI Score</th>
-                            <th>Status</th>
+                            <th class="sortable" data-sort-key="aiScore" tabindex="0" role="button" aria-sort="descending">AI Score <i class="fas fa-sort sort-icon"></i></th>
+                            <th class="sortable" data-sort-key="status" tabindex="0" role="button" aria-sort="none">Status <i class="fas fa-sort sort-icon"></i></th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -236,7 +266,7 @@
                 <span class="close" onclick="closeFilterModal()">&times;</span>
             </div>
             <div class="modal-body">
-                <div class="filter-section">
+                <div class="filter-section" id="filterExperience">
                     <h4>Experience</h4>
                     <div class="filter-group">
                         <label>Minimum Years:</label>
@@ -248,7 +278,7 @@
                     </div>
                 </div>
 
-                <div class="filter-section">
+                <div class="filter-section" id="filterEducation">
                     <h4>Education</h4>
                     <div class="filter-group">
                         <label><input type="checkbox" value="bachelor"> Bachelor's Degree</label>
@@ -258,7 +288,7 @@
                     </div>
                 </div>
 
-                <div class="filter-section">
+                <div class="filter-section" id="filterScore">
                     <h4>AI Score</h4>
                     <div class="filter-group">
                         <label>Minimum Score (%):</label>
@@ -267,19 +297,19 @@
                     </div>
                 </div>
 
-                <div class="filter-section">
+                <div class="filter-section" id="filterSkills">
                     <h4>Required Skills</h4>
                     <div class="filter-group" id="skillsFilter">
                         <!-- Skills will be populated from job description -->
                     </div>
                 </div>
 
-                <div class="filter-section">
+                <div class="filter-section" id="filterStatus">
                     <h4>Status</h4>
                     <div class="filter-group">
                         <label><input type="checkbox" value="pending" checked> Pending</label>
-                        <label><input type="checkbox" value="cleared"> Cleared</label>
-                        <label><input type="checkbox" value="rejected"> Rejected</label>
+                        <label><input type="checkbox" value="cleared" checked> Cleared</label>
+                        <label><input type="checkbox" value="rejected" checked> Rejected</label>
                     </div>
                 </div>
             </div>
@@ -305,6 +335,12 @@
         </div>
     </div>
 
+    <!-- Load order matters: scoring defines the shared skill vocabulary that
+         resume-parser consumes, and script.js wires all of it to the UI. -->
+    <script src="scoring.js"></script>
+    <script src="pdf-extract.js"></script>
+    <script src="resume-parser.js"></script>
+    <script src="test-data.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

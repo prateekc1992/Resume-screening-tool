@@ -1,10 +1,28 @@
-// Global variables
+// UI wiring for the resume screening app.
+//
+// Parsing and scoring live in their own files:
+//   pdf-extract.js    -- PDF -> page text
+//   resume-parser.js  -- page text -> candidates
+//   scoring.js        -- job requirements + match scores
+
+// Global state
 let resumeFile = null;
 let jobDescriptionText = '';
 let candidates = [];
-let jobKeywords = [];
+let jobRequirements = { skills: [], requiredYears: 0 };
 let filteredCandidates = [];
 let currentStep = 1;
+
+// Current sort. The table starts on score, best first.
+let sortState = { key: 'aiScore', dir: 'desc' };
+
+// Active advanced-filter selections, kept so that filtering and searching
+// compose instead of overwriting each other.
+let activeFilters = null;
+let activeSearch = '';
+
+// Largest resume PDF we will attempt.
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 // Initialize the app
 document.addEventListener('DOMContentLoaded', function() {
@@ -18,20 +36,31 @@ function initializeEventListeners() {
     document.getElementById('resumeFile').addEventListener('change', handleResumeUpload);
     document.getElementById('jobDescFile').addEventListener('change', handleJobDescUpload);
     document.getElementById('jobDescText').addEventListener('input', handleJobDescText);
-    
+
     // Drag and drop listeners
     setupDragAndDrop('resumeUpload', 'resumeFile');
     setupDragAndDrop('jobDescUpload', 'jobDescFile');
-    
+
     // Button listeners
     document.getElementById('processBtn').addEventListener('click', startProcessing);
     document.getElementById('viewResultsBtn').addEventListener('click', () => goToStep(3));
-    
+
     // Search and filter listeners
     document.getElementById('candidateSearch').addEventListener('input', searchCandidates);
     document.getElementById('selectAll').addEventListener('change', toggleSelectAll);
     document.getElementById('minScore').addEventListener('input', updateScoreValue);
-    
+
+    // Sortable column headers (click or keyboard).
+    document.querySelectorAll('#candidatesTable th.sortable').forEach(th => {
+        th.addEventListener('click', () => toggleSort(th.dataset.sortKey));
+        th.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleSort(th.dataset.sortKey);
+            }
+        });
+    });
+
     // Modal listeners
     document.addEventListener('click', handleModalClicks);
 }
@@ -40,20 +69,20 @@ function initializeEventListeners() {
 function setupDragAndDrop(uploadAreaId, fileInputId) {
     const uploadArea = document.getElementById(uploadAreaId);
     const fileInput = document.getElementById(fileInputId);
-    
+
     uploadArea.addEventListener('dragover', (e) => {
         e.preventDefault();
         uploadArea.classList.add('dragover');
     });
-    
+
     uploadArea.addEventListener('dragleave', () => {
         uploadArea.classList.remove('dragover');
     });
-    
+
     uploadArea.addEventListener('drop', (e) => {
         e.preventDefault();
         uploadArea.classList.remove('dragover');
-        
+
         const files = e.dataTransfer.files;
         if (files.length > 0) {
             fileInput.files = files;
@@ -62,40 +91,81 @@ function setupDragAndDrop(uploadAreaId, fileInputId) {
     });
 }
 
-// Handle resume file upload
+// ---------------------------------------------------------------------------
+// Step 1: upload
+// ---------------------------------------------------------------------------
+
 function handleResumeUpload(event) {
     const file = event.target.files[0];
-    if (file && file.type === 'application/pdf') {
-        resumeFile = file;
-        showFileInfo('resumeFileInfo', file.name, formatFileSize(file.size));
-        checkProcessButton();
-    } else {
+    if (!file) return;
+
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
         showMessage('Please select a valid PDF file', 'error');
+        return;
     }
+    if (file.size > MAX_FILE_BYTES) {
+        showMessage('That PDF is ' + formatFileSize(file.size) +
+            '. The limit is ' + formatFileSize(MAX_FILE_BYTES) + '.', 'error');
+        return;
+    }
+
+    resumeFile = file;
+    showFileInfo('resumeFileInfo', file.name, formatFileSize(file.size));
+    checkProcessButton();
 }
 
-// Handle job description file upload
-function handleJobDescUpload(event) {
+// Read the job description. A PDF goes through PDF.js; plain text is read
+// directly. The previous version ran readAsText() on PDFs, which fed binary
+// noise into keyword matching.
+async function handleJobDescUpload(event) {
     const file = event.target.files[0];
-    if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            jobDescriptionText = e.target.result;
-            showFileInfo('jobDescFileInfo', file.name, formatFileSize(file.size));
-            document.getElementById('jobDescText').value = jobDescriptionText;
-            checkProcessButton();
-        };
-        reader.readAsText(file);
+    if (!file) return;
+
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    const isText = /\.(txt|md)$/i.test(file.name) || file.type.indexOf('text/') === 0;
+
+    if (!isPdf && !isText) {
+        showMessage('Job description must be a PDF or a plain text file.', 'error');
+        return;
+    }
+
+    try {
+        let text;
+        if (isPdf) {
+            const pages = await extractPdfPages(file);
+            text = pages.join('\n');
+        } else {
+            text = await readFileAsText(file);
+        }
+
+        if (!text.trim()) {
+            showMessage('No text could be read from that job description.', 'error');
+            return;
+        }
+
+        jobDescriptionText = text;
+        document.getElementById('jobDescText').value = text;
+        showFileInfo('jobDescFileInfo', file.name, formatFileSize(file.size));
+        checkProcessButton();
+    } catch (error) {
+        showMessage(describeError(error, 'Could not read the job description.'), 'error');
     }
 }
 
-// Handle job description text input
+function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = () => reject(new Error('File could not be read.'));
+        reader.readAsText(file);
+    });
+}
+
 function handleJobDescText(event) {
     jobDescriptionText = event.target.value;
     checkProcessButton();
 }
 
-// Show file information
 function showFileInfo(elementId, fileName, fileSize) {
     const fileInfo = document.getElementById(elementId);
     fileInfo.querySelector('.file-name').textContent = fileName;
@@ -103,7 +173,6 @@ function showFileInfo(elementId, fileName, fileSize) {
     fileInfo.style.display = 'flex';
 }
 
-// Format file size
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -112,252 +181,248 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Check if process button should be enabled
 function checkProcessButton() {
     const processBtn = document.getElementById('processBtn');
     processBtn.disabled = !(resumeFile && jobDescriptionText.trim());
 }
 
-// Start processing documents
+// Turn a thrown value into something worth showing a user.
+function describeError(error, fallback) {
+    if (error && error.name === 'PdfExtractError' && error.message) return error.message;
+    console.error(error);
+    return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: processing
+// ---------------------------------------------------------------------------
+
 async function startProcessing() {
     goToStep(2);
-    
+    document.getElementById('viewResultsBtn').disabled = true;
+    document.getElementById('processingSummary').style.display = 'none';
+    resetProcessingStages();
+
     try {
-        // Step 1: Extract resume data
         await processResumeExtraction();
-        
-        // Step 2: Analyze job description
         await processJobAnalysis();
-        
-        // Step 3: Calculate AI scores
         await processAIScoring();
-        
-        // Show processing summary
+
         showProcessingSummary();
-        
         document.getElementById('viewResultsBtn').disabled = false;
-        
     } catch (error) {
-        console.error('Processing error:', error);
-        showMessage('Error processing documents. Please try again.', 'error');
+        showMessage(describeError(error, 'Error processing documents. Please try again.'), 'error');
     }
 }
 
-// Process resume extraction
-async function processResumeExtraction() {
-    updateProcessingStatus('resumeStatus', 'processing');
-    animateProgress('resumeProgress', 100, 3000);
-    
-    // Simulate PDF processing delay
-    await delay(3000);
-    
-    // Mock candidate extraction (in real implementation, this would use PDF.js or similar)
-    candidates = generateMockCandidates();
-    
-    updateProcessingStatus('resumeStatus', 'success');
+function resetProcessingStages() {
+    ['resumeProgress', 'jobAnalysisProgress', 'scoringProgress'].forEach(id => {
+        document.getElementById(id).style.width = '0%';
+    });
+    ['resumeStatus', 'jobAnalysisStatus', 'scoringStatus'].forEach(id => {
+        const el = document.getElementById(id);
+        el.classList.remove('success', 'error');
+        el.innerHTML = '<i class="fas fa-clock"></i>';
+    });
 }
 
-// Process job description analysis
+// Extract text from the bulk PDF and parse it into candidates.
+//
+// There is deliberately no mock-data fallback here. The original version waited
+// three seconds and returned five hardcoded people regardless of the upload,
+// which made a non-functional tool look functional.
+async function processResumeExtraction() {
+    updateProcessingStatus('resumeStatus', 'processing');
+    setProgress('resumeProgress', 0);
+
+    try {
+        const pageTexts = await extractPdfPages(resumeFile, (done, total) => {
+            setProgress('resumeProgress', (done / total) * 100);
+        });
+
+        candidates = parseCandidates(pageTexts);
+
+        if (candidates.length === 0) {
+            throw new PdfExtractError('NO_CANDIDATES',
+                'Text was extracted but no resumes could be identified in it. ' +
+                'Check that the PDF contains resumes with names and contact details.');
+        }
+
+        setProgress('resumeProgress', 100);
+        updateProcessingStatus('resumeStatus', 'success');
+    } catch (error) {
+        updateProcessingStatus('resumeStatus', 'error');
+        throw error;
+    }
+}
+
 async function processJobAnalysis() {
     updateProcessingStatus('jobAnalysisStatus', 'processing');
-    animateProgress('jobAnalysisProgress', 100, 2000);
-    
-    // Simulate analysis delay
-    await delay(2000);
-    
-    // Extract keywords from job description
-    jobKeywords = extractJobKeywords(jobDescriptionText);
-    
+
+    jobRequirements = extractJobRequirements(jobDescriptionText);
+
+    setProgress('jobAnalysisProgress', 100);
+    await delay(400);
     updateProcessingStatus('jobAnalysisStatus', 'success');
 }
 
-// Process AI scoring
 async function processAIScoring() {
     updateProcessingStatus('scoringStatus', 'processing');
-    animateProgress('scoringProgress', 100, 2500);
-    
-    // Simulate scoring delay
-    await delay(2500);
-    
-    // Calculate AI scores for each candidate
+
     candidates.forEach(candidate => {
-        candidate.aiScore = calculateAIScore(candidate, jobKeywords);
+        candidate.aiScore = calculateAIScore(candidate, jobRequirements);
     });
-    
-    // Sort candidates by AI score
-    candidates.sort((a, b) => b.aiScore - a.aiScore);
-    
+
+    setProgress('scoringProgress', 100);
+    await delay(400);
     updateProcessingStatus('scoringStatus', 'success');
 }
 
-// Generate mock candidates (replace with actual PDF extraction)
-function generateMockCandidates() {
-    const mockCandidates = [
-        {
-            id: 1,
-            name: 'John Smith',
-            experience: 5,
-            education: 'Master\'s in Computer Science',
-            skills: ['JavaScript', 'React', 'Node.js', 'Python', 'AWS'],
-            resumeText: 'Experienced software developer with 5 years in full-stack development...',
-            status: 'pending'
-        },
-        {
-            id: 2,
-            name: 'Sarah Johnson',
-            experience: 8,
-            education: 'Bachelor\'s in Software Engineering',
-            skills: ['Java', 'Spring Boot', 'Angular', 'Docker', 'Kubernetes'],
-            resumeText: 'Senior software engineer with expertise in enterprise applications...',
-            status: 'pending'
-        },
-        {
-            id: 3,
-            name: 'Michael Chen',
-            experience: 3,
-            education: 'Bachelor\'s in Computer Science',
-            skills: ['Python', 'Django', 'PostgreSQL', 'Redis', 'Linux'],
-            resumeText: 'Backend developer passionate about scalable web applications...',
-            status: 'pending'
-        },
-        {
-            id: 4,
-            name: 'Emily Davis',
-            experience: 6,
-            education: 'Master\'s in Information Technology',
-            skills: ['C#', '.NET', 'SQL Server', 'Azure', 'DevOps'],
-            resumeText: 'Full-stack developer with strong background in Microsoft technologies...',
-            status: 'pending'
-        },
-        {
-            id: 5,
-            name: 'David Wilson',
-            experience: 4,
-            education: 'Bachelor\'s in Computer Engineering',
-            skills: ['React', 'Vue.js', 'TypeScript', 'GraphQL', 'MongoDB'],
-            resumeText: 'Frontend-focused developer with modern JavaScript expertise...',
-            status: 'pending'
-        }
-    ];
-    
-    return mockCandidates;
-}
-
-// Extract keywords from job description
-function extractJobKeywords(text) {
-    const techKeywords = [
-        'javascript', 'react', 'angular', 'vue', 'node.js', 'python', 'java', 'c#',
-        'php', 'ruby', 'go', 'rust', 'typescript', 'html', 'css', 'sql', 'mongodb',
-        'postgresql', 'mysql', 'redis', 'elasticsearch', 'docker', 'kubernetes',
-        'aws', 'azure', 'gcp', 'git', 'jenkins', 'ci/cd', 'agile', 'scrum',
-        'microservices', 'api', 'rest', 'graphql', 'devops', 'linux', 'windows'
-    ];
-    
-    const lowerText = text.toLowerCase();
-    const foundKeywords = techKeywords.filter(keyword => 
-        lowerText.includes(keyword.toLowerCase())
-    );
-    
-    // Add experience-related keywords
-    const experienceMatch = text.match(/(\d+)[\+\s]*years?/gi);
-    if (experienceMatch) {
-        foundKeywords.push(`${experienceMatch[0]} experience`);
-    }
-    
-    return foundKeywords;
-}
-
-// Calculate AI score for a candidate
-function calculateAIScore(candidate, keywords) {
-    let score = 0;
-    let maxScore = keywords.length * 10;
-    
-    // Check skill matches
-    keywords.forEach(keyword => {
-        const candidateSkills = candidate.skills.join(' ').toLowerCase();
-        const candidateText = candidate.resumeText.toLowerCase();
-        
-        if (candidateSkills.includes(keyword.toLowerCase()) || 
-            candidateText.includes(keyword.toLowerCase())) {
-            score += 10;
-        }
-    });
-    
-    // Experience bonus
-    if (candidate.experience >= 5) score += 20;
-    else if (candidate.experience >= 3) score += 10;
-    
-    // Education bonus
-    if (candidate.education.toLowerCase().includes('master')) score += 15;
-    else if (candidate.education.toLowerCase().includes('bachelor')) score += 10;
-    
-    maxScore += 35; // Max bonus points
-    
-    return Math.min(Math.round((score / maxScore) * 100), 100);
-}
-
-// Update processing status
 function updateProcessingStatus(statusId, status) {
     const statusElement = document.getElementById(statusId);
-    
+
     if (status === 'processing') {
         statusElement.innerHTML = '<div class="loading"></div>';
     } else if (status === 'success') {
         statusElement.innerHTML = '<i class="fas fa-check-circle"></i>';
         statusElement.classList.add('success');
+    } else if (status === 'error') {
+        statusElement.innerHTML = '<i class="fas fa-exclamation-circle"></i>';
+        statusElement.classList.add('error');
     }
 }
 
-// Animate progress bar
-function animateProgress(progressId, targetWidth, duration) {
-    const progressBar = document.getElementById(progressId);
-    let currentWidth = 0;
-    const increment = targetWidth / (duration / 50);
-    
-    const animation = setInterval(() => {
-        currentWidth += increment;
-        if (currentWidth >= targetWidth) {
-            currentWidth = targetWidth;
-            clearInterval(animation);
-        }
-        progressBar.style.width = currentWidth + '%';
-    }, 50);
+// Set a progress bar. .progress-fill carries a CSS width transition, so a
+// direct assignment animates smoothly -- no JS timer needed.
+function setProgress(progressId, percent) {
+    const bar = document.getElementById(progressId);
+    if (bar) bar.style.width = Math.max(0, Math.min(100, percent)) + '%';
 }
 
-// Show processing summary
 function showProcessingSummary() {
     const summary = document.getElementById('processingSummary');
     const avgScore = candidates.reduce((sum, c) => sum + c.aiScore, 0) / candidates.length;
-    
+
     document.getElementById('candidateCount').textContent = candidates.length;
-    document.getElementById('keywordCount').textContent = jobKeywords.length;
+    document.getElementById('keywordCount').textContent = jobRequirements.skills.length;
     document.getElementById('avgScore').textContent = Math.round(avgScore) + '%';
-    
+
     summary.style.display = 'block';
+    renderRequirementChips();
+
+    // A score built only from experience and education bonuses says nothing
+    // about skill fit, so say so rather than letting the number stand alone.
+    if (jobRequirements.skills.length === 0) {
+        showMessage('No recognised skills were found in the job description, so ' +
+            'match scores reflect only experience and education. Add specific ' +
+            'technologies to the description for a meaningful score.', 'info');
+    }
 }
 
-// Navigate to specific step
+// ---------------------------------------------------------------------------
+// Requirement review
+// ---------------------------------------------------------------------------
+
+// Show every requirement the job description yielded, tagged by where it came
+// from, each removable.
+//
+// Term extraction cannot reliably tell a competency from an organisation name
+// -- this posting yields "SAHI" and "clinician-in-the-loop" (real requirements)
+// alongside "WJCF" and "NHA" (the employer and the client). Rather than pretend
+// otherwise, show the list and let the reviewer correct it.
+function renderRequirementChips() {
+    const panel = document.getElementById('requirementsPanel');
+    const container = document.getElementById('requirementChips');
+    const meta = document.getElementById('requirementsMeta');
+    if (!panel || !container) return;
+
+    container.innerHTML = '';
+    const skills = jobRequirements.skills || [];
+
+    if (skills.length === 0) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    skills.forEach(skill => {
+        const source = (jobRequirements.skillSources || {})[skill] || 'vocabulary';
+
+        const chip = document.createElement('span');
+        chip.className = 'requirement-chip source-' + source;
+        chip.title = source === 'jd'
+            ? 'Read from the job description text'
+            : 'Recognised technology';
+
+        const label = document.createElement('span');
+        label.textContent = skill;
+        chip.appendChild(label);
+
+        const remove = document.createElement('button');
+        remove.className = 'chip-remove';
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.setAttribute('aria-label', 'Remove requirement ' + skill);
+        remove.addEventListener('click', () => removeRequirement(skill));
+        chip.appendChild(remove);
+
+        container.appendChild(chip);
+    });
+
+    const mined = skills.filter(s => (jobRequirements.skillSources || {})[s] === 'jd').length;
+    meta.textContent = skills.length + ' requirements (' + (skills.length - mined) +
+        ' recognised technologies, ' + mined + ' read from the description text)' +
+        (jobRequirements.scopedToRequirements
+            ? '. Read from the qualifications and responsibilities sections.'
+            : '. No requirements section was found, so the whole description was used.') +
+        ' Required experience: ' + (jobRequirements.requiredYears > 0
+            ? jobRequirements.requiredYears + ' years.'
+            : 'not stated.');
+
+    panel.style.display = 'block';
+}
+
+// Drop a requirement and rescore every candidate against what is left.
+function removeRequirement(skill) {
+    jobRequirements.skills = (jobRequirements.skills || []).filter(s => s !== skill);
+    if (jobRequirements.skillSources) delete jobRequirements.skillSources[skill];
+
+    candidates.forEach(c => { c.aiScore = calculateAIScore(c, jobRequirements); });
+
+    const avg = candidates.length
+        ? Math.round(candidates.reduce((s, c) => s + c.aiScore, 0) / candidates.length)
+        : 0;
+    document.getElementById('keywordCount').textContent = jobRequirements.skills.length;
+    document.getElementById('avgScore').textContent = avg + '%';
+
+    renderRequirementChips();
+
+    // Keep the table and its skill filter consistent with the new requirements.
+    if (currentStep === 3) {
+        populateFilterSkills();
+        applyActiveView();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step navigation
+// ---------------------------------------------------------------------------
+
 function goToStep(step) {
-    // Hide all step contents
     document.querySelectorAll('.step-content').forEach(content => {
         content.classList.remove('active');
     });
-    
-    // Show target step content
+
     document.getElementById(`step${step}`).classList.add('active');
-    
-    // Update step indicator
+
     currentStep = step;
     updateStepIndicator();
-    
-    // Load candidates table if going to step 3
+
     if (step === 3) {
         loadCandidatesTable();
         populateFilterSkills();
     }
 }
 
-// Update step indicator
 function updateStepIndicator() {
     document.querySelectorAll('.step').forEach((step, index) => {
         if (index + 1 === currentStep) {
@@ -368,66 +433,139 @@ function updateStepIndicator() {
     });
 }
 
-// Load candidates table
+// ---------------------------------------------------------------------------
+// Step 3: table rendering
+// ---------------------------------------------------------------------------
+
 function loadCandidatesTable() {
-    filteredCandidates = [...candidates];
-    renderCandidatesTable();
+    applyActiveView();
     updateClearedCount();
 }
 
-// Render candidates table
+// Recompute filteredCandidates from the advanced filters AND the search box,
+// then render. Previously searchCandidates() and applyFilters() each reset from
+// the full list, so using one silently discarded the other.
+function applyActiveView() {
+    let result = candidates.slice();
+
+    if (activeFilters) result = result.filter(c => matchesFilters(c, activeFilters));
+    if (activeSearch) result = result.filter(c => matchesSearch(c, activeSearch));
+
+    filteredCandidates = result;
+    renderCandidatesTable();
+}
+
 function renderCandidatesTable() {
+    sortFilteredCandidates();
+
     const tbody = document.getElementById('candidatesTableBody');
     tbody.innerHTML = '';
-    
-    filteredCandidates.forEach(candidate => {
-        const row = createCandidateRow(candidate);
+
+    if (filteredCandidates.length === 0) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 8;
+        cell.className = 'empty-row';
+        cell.textContent = candidates.length === 0
+            ? 'No candidates loaded yet.'
+            : 'No candidates match the current filters.';
+        row.appendChild(cell);
         tbody.appendChild(row);
+        return;
+    }
+
+    filteredCandidates.forEach(candidate => {
+        tbody.appendChild(createCandidateRow(candidate));
     });
 }
 
-// Create candidate row
+// Build a row with DOM nodes and textContent.
+//
+// This used to be an innerHTML template. Candidate fields now come out of an
+// uploaded PDF, i.e. untrusted input, so interpolating them into HTML would let
+// a crafted resume run script in the page.
 function createCandidateRow(candidate) {
     const row = document.createElement('tr');
-    
-    const scoreClass = getScoreClass(candidate.aiScore);
-    const statusClass = `status-${candidate.status}`;
-    
-    row.innerHTML = `
-        <td><input type="checkbox" data-candidate-id="${candidate.id}"></td>
-        <td>
-            <a href="#" class="candidate-name" onclick="showResumeModal(${candidate.id})">
-                ${candidate.name}
-            </a>
-        </td>
-        <td><span class="experience-badge">${candidate.experience} years</span></td>
-        <td><span class="education-badge">${candidate.education}</span></td>
-        <td>
-            <div class="skills-container">
-                ${candidate.skills.slice(0, 3).map(skill => 
-                    `<span class="skill-tag">${skill}</span>`
-                ).join('')}
-                ${candidate.skills.length > 3 ? `<span class="skill-tag">+${candidate.skills.length - 3}</span>` : ''}
-            </div>
-        </td>
-        <td><span class="score-badge ${scoreClass}">${candidate.aiScore}%</span></td>
-        <td><span class="status-badge ${statusClass}">${candidate.status}</span></td>
-        <td>
-            <div class="action-buttons">
-                <button class="btn-small btn-clear" onclick="updateCandidateStatus(${candidate.id}, 'cleared')">
-                    Clear
-                </button>
-                <button class="btn-small btn-reject" onclick="updateCandidateStatus(${candidate.id}, 'rejected')">
-                    Reject
-                </button>
-            </div>
-        </td>
-    `;
-    
+
+    // Select checkbox
+    const selectCell = document.createElement('td');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.dataset.candidateId = candidate.id;
+    checkbox.setAttribute('aria-label', 'Select ' + candidate.name);
+    selectCell.appendChild(checkbox);
+    row.appendChild(selectCell);
+
+    // Name, linked to the resume preview
+    const nameCell = document.createElement('td');
+    const link = document.createElement('a');
+    link.href = '#';
+    link.className = 'candidate-name';
+    link.textContent = candidate.name;
+    link.addEventListener('click', event => {
+        event.preventDefault();
+        showResumeModal(candidate.id);
+    });
+    nameCell.appendChild(link);
+    row.appendChild(nameCell);
+
+    row.appendChild(badgeCell('experience-badge', candidate.experience + ' years'));
+    row.appendChild(badgeCell('education-badge', candidate.education));
+
+    // Skills: first three plus an overflow count
+    const skillsCell = document.createElement('td');
+    const skillsWrap = document.createElement('div');
+    skillsWrap.className = 'skills-container';
+    candidate.skills.slice(0, 3).forEach(skill => {
+        const tag = document.createElement('span');
+        tag.className = 'skill-tag';
+        tag.textContent = skill;
+        skillsWrap.appendChild(tag);
+    });
+    if (candidate.skills.length > 3) {
+        const more = document.createElement('span');
+        more.className = 'skill-tag';
+        more.textContent = '+' + (candidate.skills.length - 3);
+        more.title = candidate.skills.slice(3).join(', ');
+        skillsWrap.appendChild(more);
+    }
+    skillsCell.appendChild(skillsWrap);
+    row.appendChild(skillsCell);
+
+    row.appendChild(badgeCell('score-badge ' + getScoreClass(candidate.aiScore), candidate.aiScore + '%'));
+    row.appendChild(badgeCell('status-badge status-' + candidate.status, candidate.status));
+
+    // Actions
+    const actionsCell = document.createElement('td');
+    const actions = document.createElement('div');
+    actions.className = 'action-buttons';
+    actions.appendChild(actionButton('btn-small btn-clear', 'Clear', () =>
+        updateCandidateStatus(candidate.id, 'cleared')));
+    actions.appendChild(actionButton('btn-small btn-reject', 'Reject', () =>
+        updateCandidateStatus(candidate.id, 'rejected')));
+    actionsCell.appendChild(actions);
+    row.appendChild(actionsCell);
+
     return row;
 }
 
-// Get score class for styling
+function badgeCell(className, text) {
+    const cell = document.createElement('td');
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    cell.appendChild(span);
+    return cell;
+}
+
+function actionButton(className, label, onClick) {
+    const button = document.createElement('button');
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    return button;
+}
+
 function getScoreClass(score) {
     if (score >= 80) return 'score-excellent';
     if (score >= 60) return 'score-good';
@@ -435,7 +573,61 @@ function getScoreClass(score) {
     return 'score-poor';
 }
 
-// Update candidate status
+// ---------------------------------------------------------------------------
+// Sorting
+// ---------------------------------------------------------------------------
+
+function toggleSort(key) {
+    if (!key) return;
+    if (sortState.key === key) {
+        sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        // Text ascends, numbers descend, on first click.
+        sortState = { key: key, dir: (key === 'experience' || key === 'aiScore') ? 'desc' : 'asc' };
+    }
+    renderCandidatesTable();
+    updateSortIndicators();
+}
+
+function sortFilteredCandidates() {
+    const key = sortState.key;
+    const factor = sortState.dir === 'asc' ? 1 : -1;
+
+    filteredCandidates.sort((a, b) => {
+        const av = a[key];
+        const bv = b[key];
+        let cmp;
+        if (typeof av === 'number' && typeof bv === 'number') {
+            cmp = av - bv;
+        } else {
+            cmp = String(av === undefined ? '' : av)
+                .localeCompare(String(bv === undefined ? '' : bv), undefined, { sensitivity: 'base' });
+        }
+        // Stable tie-break so equal rows keep a predictable order.
+        return cmp !== 0 ? cmp * factor : a.id - b.id;
+    });
+}
+
+function updateSortIndicators() {
+    document.querySelectorAll('#candidatesTable th.sortable').forEach(th => {
+        const icon = th.querySelector('.sort-icon');
+        const isActive = th.dataset.sortKey === sortState.key;
+        th.setAttribute('aria-sort', isActive
+            ? (sortState.dir === 'asc' ? 'ascending' : 'descending')
+            : 'none');
+        th.classList.toggle('sorted', isActive);
+        if (icon) {
+            icon.className = 'fas sort-icon ' + (isActive
+                ? (sortState.dir === 'asc' ? 'fa-sort-up' : 'fa-sort-down')
+                : 'fa-sort');
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Status changes
+// ---------------------------------------------------------------------------
+
 function updateCandidateStatus(candidateId, status) {
     const candidate = candidates.find(c => c.id === candidateId);
     if (candidate) {
@@ -444,56 +636,155 @@ function updateCandidateStatus(candidateId, status) {
     }
 }
 
-// Search candidates
-function searchCandidates() {
-    const searchTerm = document.getElementById('candidateSearch').value.toLowerCase();
-    
-    if (!searchTerm) {
-        filteredCandidates = [...candidates];
-    } else {
-        filteredCandidates = candidates.filter(candidate => 
-            candidate.name.toLowerCase().includes(searchTerm) ||
-            candidate.skills.some(skill => skill.toLowerCase().includes(searchTerm)) ||
-            candidate.education.toLowerCase().includes(searchTerm)
-        );
+// Apply a status to every checked row. The checkboxes and the select-all box
+// already existed but nothing consumed the selection.
+function bulkUpdateStatus(status) {
+    const checked = document.querySelectorAll('#candidatesTableBody input[data-candidate-id]:checked');
+    if (checked.length === 0) {
+        showMessage('Select one or more candidates first.', 'info');
+        return;
     }
-    
-    renderCandidatesTable();
+
+    const ids = Array.from(checked).map(box => parseInt(box.dataset.candidateId, 10));
+    candidates.forEach(candidate => {
+        if (ids.indexOf(candidate.id) !== -1) candidate.status = status;
+    });
+
+    document.getElementById('selectAll').checked = false;
+    loadCandidatesTable();
+    showMessage('Marked ' + ids.length + ' candidate(s) as ' + status + '.', 'success');
 }
 
-// Toggle select all candidates
 function toggleSelectAll() {
     const selectAll = document.getElementById('selectAll');
-    const checkboxes = document.querySelectorAll('input[data-candidate-id]');
-    
-    checkboxes.forEach(checkbox => {
+    document.querySelectorAll('#candidatesTableBody input[data-candidate-id]').forEach(checkbox => {
         checkbox.checked = selectAll.checked;
     });
 }
 
-// Update cleared count
 function updateClearedCount() {
     const clearedCount = candidates.filter(c => c.status === 'cleared').length;
     document.getElementById('clearedCount').textContent = clearedCount;
 }
 
-// Populate filter skills
-function populateFilterSkills() {
-    const skillsFilter = document.getElementById('skillsFilter');
-    const allSkills = [...new Set(candidates.flatMap(c => c.skills))];
-    
-    skillsFilter.innerHTML = allSkills.map(skill => 
-        `<label><input type="checkbox" value="${skill}"> ${skill}</label>`
-    ).join('');
+// ---------------------------------------------------------------------------
+// Search and filters
+// ---------------------------------------------------------------------------
+
+function searchCandidates() {
+    activeSearch = document.getElementById('candidateSearch').value.toLowerCase().trim();
+    applyActiveView();
 }
 
-// Update score value display
+function matchesSearch(candidate, term) {
+    return candidate.name.toLowerCase().indexOf(term) !== -1 ||
+        candidate.education.toLowerCase().indexOf(term) !== -1 ||
+        candidate.skills.some(skill => skill.toLowerCase().indexOf(term) !== -1);
+}
+
+function populateFilterSkills() {
+    const skillsFilter = document.getElementById('skillsFilter');
+    skillsFilter.innerHTML = '';
+
+    // Offer the job's required skills first -- those are what filtering is for --
+    // then anything else the candidates bring.
+    const required = jobRequirements.skills || [];
+    const fromCandidates = candidates.reduce((all, c) => all.concat(c.skills), []);
+    const seen = {};
+    const ordered = [];
+    required.concat(fromCandidates).forEach(skill => {
+        const key = skill.toLowerCase();
+        if (seen[key]) return;
+        seen[key] = true;
+        ordered.push(skill);
+    });
+
+    ordered.forEach(skill => {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = skill;            // property assignment, not HTML
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(' ' + skill));
+        skillsFilter.appendChild(label);
+    });
+}
+
 function updateScoreValue() {
     const minScore = document.getElementById('minScore').value;
     document.getElementById('minScoreValue').textContent = minScore + '%';
 }
 
-// Modal functions
+// Read the filter modal into a plain object. Sections are addressed by id --
+// they used to be found by position (:nth-child(2), :last-child), which broke
+// if anyone reordered the markup.
+function readFilterForm() {
+    const checkedValues = sectionId => Array.from(
+        document.querySelectorAll('#' + sectionId + ' input[type="checkbox"]:checked')
+    ).map(input => input.value);
+
+    return {
+        minExperience: parseInt(document.getElementById('minExperience').value, 10) || 0,
+        maxExperience: parseInt(document.getElementById('maxExperience').value, 10) || 50,
+        minScore: parseInt(document.getElementById('minScore').value, 10) || 0,
+        education: checkedValues('filterEducation'),
+        skills: checkedValues('filterSkills'),
+        statuses: checkedValues('filterStatus')
+    };
+}
+
+function matchesFilters(candidate, filters) {
+    if (candidate.experience < filters.minExperience) return false;
+    if (candidate.experience > filters.maxExperience) return false;
+    if (candidate.aiScore < filters.minScore) return false;
+
+    if (filters.education.length > 0) {
+        const education = candidate.education.toLowerCase();
+        if (!filters.education.some(level => education.indexOf(level) !== -1)) return false;
+    }
+
+    if (filters.skills.length > 0) {
+        const own = candidate.skills.map(s => s.toLowerCase());
+        if (!filters.skills.some(skill => own.indexOf(skill.toLowerCase()) !== -1)) return false;
+    }
+
+    if (filters.statuses.length > 0 && filters.statuses.indexOf(candidate.status) === -1) {
+        return false;
+    }
+
+    return true;
+}
+
+function applyFilters() {
+    activeFilters = readFilterForm();
+    applyActiveView();
+    closeFilterModal();
+}
+
+function clearFilters() {
+    document.getElementById('minExperience').value = 0;
+    document.getElementById('maxExperience').value = 50;
+    document.getElementById('minScore').value = 0;
+    document.getElementById('minScoreValue').textContent = '0%';
+
+    document.querySelectorAll('#filterModal input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = false;
+    });
+
+    // All statuses on by default. With only 'pending' checked, clearing a
+    // candidate made them disappear from the table, which looked like data loss.
+    document.querySelectorAll('#filterStatus input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = true;
+    });
+
+    activeFilters = null;
+    applyActiveView();
+}
+
+// ---------------------------------------------------------------------------
+// Modals
+// ---------------------------------------------------------------------------
+
 function openFilterModal() {
     document.getElementById('filterModal').classList.add('show');
 }
@@ -504,170 +795,125 @@ function closeFilterModal() {
 
 function showResumeModal(candidateId) {
     const candidate = candidates.find(c => c.id === candidateId);
-    if (candidate) {
-        document.getElementById('resumeModalTitle').textContent = `${candidate.name} - Resume`;
-        document.getElementById('resumeContent').textContent = candidate.resumeText;
-        document.getElementById('resumeModal').classList.add('show');
-    }
+    if (!candidate) return;
+
+    document.getElementById('resumeModalTitle').textContent = candidate.name + ' - Resume';
+
+    // <pre> + textContent: keeps the extracted line structure readable and
+    // cannot execute anything the PDF contained.
+    const container = document.getElementById('resumeContent');
+    container.innerHTML = '';
+
+    const meta = document.createElement('p');
+    meta.className = 'resume-meta';
+    meta.textContent = [
+        candidate.email,
+        candidate.phone,
+        candidate.experience + ' years experience',
+        candidate.education
+    ].filter(Boolean).join('  |  ');
+    container.appendChild(meta);
+
+    const body = document.createElement('pre');
+    body.className = 'resume-text';
+    body.textContent = candidate.resumeText;
+    container.appendChild(body);
+
+    document.getElementById('resumeModal').classList.add('show');
 }
 
 function closeResumeModal() {
     document.getElementById('resumeModal').classList.remove('show');
 }
 
-// Handle modal clicks
 function handleModalClicks(event) {
     if (event.target.classList.contains('modal')) {
         event.target.classList.remove('show');
     }
 }
 
-// Apply filters
-function applyFilters() {
-    const minExperience = parseInt(document.getElementById('minExperience').value) || 0;
-    const maxExperience = parseInt(document.getElementById('maxExperience').value) || 50;
-    const minScore = parseInt(document.getElementById('minScore').value) || 0;
-    
-    // Get selected education levels
-    const educationFilters = Array.from(document.querySelectorAll('#filterModal .filter-section:nth-child(2) input:checked'))
-        .map(input => input.value);
-    
-    // Get selected skills
-    const skillFilters = Array.from(document.querySelectorAll('#skillsFilter input:checked'))
-        .map(input => input.value);
-    
-    // Get selected statuses
-    const statusFilters = Array.from(document.querySelectorAll('#filterModal .filter-section:last-child input:checked'))
-        .map(input => input.value);
-    
-    filteredCandidates = candidates.filter(candidate => {
-        // Experience filter
-        if (candidate.experience < minExperience || candidate.experience > maxExperience) {
-            return false;
-        }
-        
-        // Score filter
-        if (candidate.aiScore < minScore) {
-            return false;
-        }
-        
-        // Education filter
-        if (educationFilters.length > 0) {
-            const hasMatchingEducation = educationFilters.some(edu => 
-                candidate.education.toLowerCase().includes(edu)
-            );
-            if (!hasMatchingEducation) return false;
-        }
-        
-        // Skills filter
-        if (skillFilters.length > 0) {
-            const hasMatchingSkill = skillFilters.some(skill => 
-                candidate.skills.includes(skill)
-            );
-            if (!hasMatchingSkill) return false;
-        }
-        
-        // Status filter
-        if (statusFilters.length > 0 && !statusFilters.includes(candidate.status)) {
-            return false;
-        }
-        
-        return true;
-    });
-    
-    renderCandidatesTable();
-    closeFilterModal();
-}
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
 
-// Clear all filters
-function clearFilters() {
-    document.getElementById('minExperience').value = 0;
-    document.getElementById('maxExperience').value = 50;
-    document.getElementById('minScore').value = 0;
-    document.getElementById('minScoreValue').textContent = '0%';
-    
-    document.querySelectorAll('#filterModal input[type="checkbox"]').forEach(checkbox => {
-        checkbox.checked = false;
-    });
-    
-    // Check default status filter
-    document.querySelector('#filterModal .filter-section:last-child input[value="pending"]').checked = true;
-    
-    filteredCandidates = [...candidates];
-    renderCandidatesTable();
-}
-
-// Export cleared candidates to Excel
 function exportClearedCandidates() {
     const clearedCandidates = candidates.filter(c => c.status === 'cleared');
-    
+
     if (clearedCandidates.length === 0) {
         showMessage('No cleared candidates to export', 'info');
         return;
     }
-    
-    // Prepare data for Excel export
+
     const exportData = clearedCandidates.map(candidate => ({
         'Name': candidate.name,
+        'Email': candidate.email || '',
+        'Phone': candidate.phone || '',
         'Experience (Years)': candidate.experience,
         'Education': candidate.education,
         'Key Skills': candidate.skills.join(', '),
         'AI Score (%)': candidate.aiScore,
         'Status': candidate.status
     }));
-    
-    // Create workbook and worksheet
+
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(exportData);
-    
-    // Add worksheet to workbook
     XLSX.utils.book_append_sheet(wb, ws, 'Cleared Candidates');
-    
-    // Generate filename with timestamp
+
     const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-    const filename = `cleared_candidates_${timestamp}.xlsx`;
-    
-    // Save file
-    XLSX.writeFile(wb, filename);
-    
+    XLSX.writeFile(wb, `cleared_candidates_${timestamp}.xlsx`);
+
     showMessage(`Exported ${clearedCandidates.length} cleared candidates successfully!`, 'success');
 }
 
-// Show message to user
+// ---------------------------------------------------------------------------
+// Sample data (demo only)
+// ---------------------------------------------------------------------------
+
+// Load the fixtures from test-data.js so the screening UI can be explored
+// without a PDF. Explicit and user-initiated -- the processing pipeline never
+// falls back to this.
+function loadSampleData() {
+    if (typeof enhancedTestCandidates === 'undefined') {
+        showMessage('Sample data is unavailable (test-data.js did not load).', 'error');
+        return;
+    }
+
+    candidates = enhancedTestCandidates.map((c, i) => Object.assign({}, c, {
+        id: i + 1,
+        status: 'pending',
+        email: c.email || '',
+        phone: c.phone || ''
+    }));
+
+    if (!jobDescriptionText.trim() && typeof testJobDescriptions !== 'undefined') {
+        jobDescriptionText = testJobDescriptions.fullstack;
+        document.getElementById('jobDescText').value = jobDescriptionText;
+    }
+
+    jobRequirements = extractJobRequirements(jobDescriptionText);
+    candidates.forEach(c => { c.aiScore = calculateAIScore(c, jobRequirements); });
+
+    showMessage('Loaded ' + candidates.length + ' sample candidates. This is demo data, not a real screening.', 'info');
+    goToStep(3);
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 function showMessage(text, type = 'info') {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}`;
     messageDiv.textContent = text;
-    
-    // Insert at the top of the current step content
+
     const currentStepContent = document.querySelector('.step-content.active');
     currentStepContent.insertBefore(messageDiv, currentStepContent.firstChild);
-    
-    // Remove message after 5 seconds
+
     setTimeout(() => {
         messageDiv.remove();
-    }, 5000);
+    }, 8000);
 }
 
-// Utility function for delays
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Update TODO status
-document.addEventListener('DOMContentLoaded', function() {
-    // Mark setup as completed since we've created all the files
-    updateTodoStatus('setup_project', 'completed');
-    updateTodoStatus('step1_upload', 'completed');
-    updateTodoStatus('step2_processing', 'completed');
-    updateTodoStatus('step3_screening', 'completed');
-    updateTodoStatus('pdf_extraction', 'completed');
-    updateTodoStatus('ai_scoring', 'completed');
-    updateTodoStatus('excel_export', 'completed');
-    updateTodoStatus('filter_system', 'completed');
-});
-
-function updateTodoStatus(todoId, status) {
-    // This is a placeholder - in a real implementation, this would update the todo system
-    console.log(`TODO ${todoId} marked as ${status}`);
 }

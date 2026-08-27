@@ -10,19 +10,28 @@ A comprehensive browser-based resume screening application that automates the pr
 - **Drag & Drop Support**: Easy file upload with visual feedback
 - **File Validation**: Ensures proper file formats are uploaded
 
-### ⚙️ Step 2: Intelligent Processing
-- **PDF Text Extraction**: Automatically extracts text from bulk resume PDFs
-- **Candidate Parsing**: Identifies individual candidates from bulk documents
-- **Job Keyword Analysis**: Extracts key skills and requirements from job descriptions
-- **AI Scoring Algorithm**: Calculates match scores based on skills, experience, and education
-- **Progress Tracking**: Real-time processing status with animated progress bars
+### ⚙️ Step 2: Processing
+- **PDF Text Extraction**: Real extraction via PDF.js. Text fragments are regrouped
+  into lines by position, so headings and date ranges survive
+- **Candidate Parsing**: Splits a bulk PDF into individual resumes on page
+  boundaries (contact block, name line, or an explicit "Resume" banner), then
+  extracts name, email, phone, years of experience, highest degree and skills
+- **Job Requirement Analysis**: Reads requirement terms *out of the job
+  description*, so terms nobody put on a list still count, and reads the stated
+  years-of-experience requirement
+- **Match Scoring**: Keyword-and-rules scoring (see below) -- not machine learning
+- **Progress Tracking**: The extraction bar tracks real page-by-page progress
 
 ### 🔍 Step 3: Advanced Screening
-- **Interactive Candidate Table**: Sortable table with candidate information
-- **Hyperlinked Names**: Click candidate names to view full resume content
-- **Advanced Filtering System**: Filter by experience, education, skills, AI score, and status
+- **Interactive Candidate Table**: Click any column header to sort (keyboard
+  accessible; `aria-sort` is maintained)
+- **Hyperlinked Names**: Click a candidate name to read their extracted resume
+- **Advanced Filtering System**: Filter by experience, education, skills, match
+  score, and status. Filters and the search box compose -- using one no longer
+  discards the other
 - **Search Functionality**: Real-time search across candidate data
-- **Status Management**: Mark candidates as cleared, rejected, or pending
+- **Status Management**: Mark candidates cleared or rejected, individually or in
+  bulk via the row checkboxes
 - **Excel Export**: Download cleared candidates as Excel spreadsheet
 - **Responsive Design**: Works seamlessly on desktop and mobile devices
 
@@ -30,31 +39,39 @@ A comprehensive browser-based resume screening application that automates the pr
 
 - **Frontend**: HTML5, CSS3, JavaScript (ES6+)
 - **Styling**: Modern CSS with gradients, animations, and responsive design
-- **Libraries**: 
+- **Libraries**:
+  - PDF.js 3.11 (UMD build) for PDF text extraction
+  - SheetJS (XLSX) for Excel export
   - Font Awesome for icons
-  - SheetJS (XLSX) for Excel export functionality
-  - PDF-lib for PDF processing (ready for integration)
 
 ## File Structure
 
 ```
-/workspace/
-├── index.html          # Main application HTML
-├── styles.css          # Comprehensive CSS styling
-├── script.js           # JavaScript functionality
-└── README.md           # This documentation file
+├── index.html          # Application markup
+├── styles.css          # Styling
+├── scoring.js          # Skill vocabulary, job requirements, match scoring
+├── pdf-extract.js      # PDF.js wrapper: PDF -> page text
+├── resume-parser.js    # Page text -> candidate records
+├── script.js           # UI wiring only
+├── test-data.js        # Sample job descriptions and candidate fixtures
+├── test-runner.html    # Standalone demo page (see the warning inside it)
+└── README.md           # This file
 ```
+
+No build step and no bundler: the files load as plain globals in dependency
+order (`scoring.js` -> `pdf-extract.js` -> `resume-parser.js` -> `script.js`).
 
 ## Getting Started
 
 ### Prerequisites
 - Modern web browser (Chrome, Firefox, Safari, Edge)
-- Local web server (for file operations) or direct file opening
+- **A local web server is required.** PDF.js runs its parser in a Web Worker,
+  which will not load from a `file://` URL. Opening `index.html` directly leaves
+  extraction broken.
 
 ### Installation
 1. Download or clone all files to a local directory
-2. Open `index.html` in a web browser
-3. For full functionality, serve from a local web server:
+2. Serve the directory, then open `http://localhost:8000/index.html`:
    ```bash
    # Using Python 3
    python -m http.server 8000
@@ -92,12 +109,44 @@ A comprehensive browser-based resume screening application that automates the pr
 
 ## Key Features Explained
 
-### AI Scoring Algorithm
-The app uses a sophisticated scoring system that evaluates:
-- **Skill Matching**: Compares candidate skills with job requirements
-- **Experience Level**: Bonus points for relevant experience
-- **Education Background**: Additional scoring for advanced degrees
-- **Keyword Density**: Analyzes resume content against job keywords
+### Where requirements come from
+The requirement list is derived from the job description you supply, in two
+layers:
+
+1. **Recognised technologies** &mdash; `SKILL_VOCABULARY` in `scoring.js` supplies
+   aliases and canonical casing, so `nodejs`, `Node.js` and `node` all count as
+   one skill, and `Python3` matches `Python`.
+2. **Terms mined from the description** &mdash; abbreviations (`RAG`, `FHIR`,
+   `NHCX`), parenthesised definitions, CamelCase product names and hyphenated
+   practices (`model-monitoring`, `clinician-in-the-loop`). This is what stops a
+   fixed list from being the ceiling: a term matters because the job description
+   says so, not because someone predicted it.
+
+Mining is restricted to the qualifications, responsibilities and skills sections
+when the posting has them, which keeps mission statements and funder lists out
+of the requirement list.
+
+Extraction cannot reliably tell a competency from an organisation name, so
+**step 2 shows every requirement it found, tagged by origin, and lets you remove
+any of them.** Scores recompute immediately. Treat that panel as part of the
+workflow: a posting that names its employer and client will offer those as
+requirements, and dropping them sharpens the ranking.
+
+### Match Scoring
+Deterministic keyword-and-rules scoring, not a model. `calculateAIScore()` in
+`scoring.js` awards:
+- **10 points per required skill** the candidate demonstrates, in their skills
+  list or anywhere in their resume text
+- **Up to 20 experience points**, measured against the years the job description
+  actually asks for (or a graduated scale when it states none)
+- **Up to 15 education points** for the highest degree detected
+
+The total is normalised over `requiredSkills x 10 + 35`. If no skills are
+recognised in the job description, the score reflects only experience and
+education, so it is capped at 50% and the UI says why.
+
+`SKILL_VOCABULARY` in `scoring.js` is the single place to add technologies; it
+feeds both job-description parsing and resume skill extraction.
 
 ### Advanced Filtering
 - **Non-mandatory Filters**: All filters are optional and can be combined
@@ -121,8 +170,9 @@ The app uses a sophisticated scoring system that evaluates:
 ## Future Enhancements
 
 ### Planned Features
-- **Real PDF Processing**: Integration with PDF.js for actual PDF text extraction
-- **Machine Learning**: Enhanced AI scoring with ML models
+- **OCR**: Scanned, image-only PDFs are detected and rejected; no OCR yet
+- **Multi-column layouts**: Line reconstruction assumes a single column
+- **Machine Learning**: Scoring is currently deterministic rules
 - **Bulk Actions**: Select and process multiple candidates simultaneously
 - **Custom Scoring**: User-defined scoring criteria and weights
 - **Integration APIs**: Connect with ATS and HR systems
@@ -142,17 +192,37 @@ The app uses a sophisticated scoring system that evaluates:
 - Responsive breakpoints can be adjusted for different screen sizes
 
 ### Functionality
-- Update `generateMockCandidates()` function to integrate with real PDF processing
-- Modify `calculateAIScore()` algorithm to adjust scoring criteria
-- Extend `extractJobKeywords()` for domain-specific keyword extraction
+- Add technologies to `SKILL_VOCABULARY` in `scoring.js` for better aliasing and
+  casing; you do not need to add a term for it to be scored, because
+  `mineJobDescriptionTerms()` picks up whatever the description states
+- Adjust the weights in `calculateAIScore()` (`scoring.js`) to change scoring
+- Tune `isResumeStart()` / `looksLikeResume()` in `resume-parser.js` if your
+  bulk PDFs are laid out unusually
 
 ## Troubleshooting
 
 ### Common Issues
-1. **Files not uploading**: Ensure you're using a supported browser and file format
-2. **Processing stuck**: Refresh the page and try again with smaller files
-3. **Export not working**: Check if browser allows file downloads
-4. **Responsive issues**: Clear browser cache and ensure latest browser version
+1. **"The PDF library failed to load"**: PDF.js comes from a CDN and the worker
+   needs an http(s) origin. Serve the directory; do not open `index.html` as a
+   `file://` URL.
+2. **"This PDF appears to be scanned images"**: the file has no text layer.
+   OCR is not supported -- supply a text-based PDF.
+3. **"No resumes could be identified"**: text was extracted but nothing in it
+   looked like a resume (no contact details, no name lines, no section
+   headings). The app reports this rather than inventing candidates.
+4. **Wrong candidate count**: resumes are split on page boundaries. If several
+   resumes share one page, the email-anchored fallback tries to recover; check
+   the browser console, which reports any blocks that were skipped.
+5. **Wrong years of experience**: taken from an explicit "N years" statement if
+   present, otherwise the merged span of dated roles in the experience section.
+   Internships are included. Where a resume has no detectable section headings
+   the whole document is scanned and degree lines are filtered out by hand, so
+   the figure is less reliable for those.
+6. **Odd candidate name**: taken from the resume's own header. Where that header
+   has no parseable name -- a single run-together word, or a name printed only
+   in a page footer -- it falls back to the email local part, which can read
+   oddly. The record is still the right person.
+7. **Export not working**: check that the browser allows downloads.
 
 ### Performance Tips
 - Keep PDF files under 50MB for optimal performance
@@ -169,4 +239,12 @@ For issues, suggestions, or contributions, please create an issue in the project
 
 ---
 
-**Note**: This is a demonstration application. For production use, implement proper PDF processing, server-side validation, and security measures.
+**Note**: PDF parsing, candidate extraction and scoring are real and run
+entirely in the browser -- no data leaves the page. Parsing resumes is
+heuristic: verify anything that matters before acting on it. Extraction quality
+depends on the PDF being text-based and single-column. For production, add
+server-side validation and a review step for parsed fields.
+
+A "Load sample data" link on the upload step fills the table from `test-data.js`
+fixtures for demo purposes. The real processing path never falls back to it: if
+no resumes can be identified, it reports an error instead.

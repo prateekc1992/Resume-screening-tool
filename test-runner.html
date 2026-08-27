@@ -767,6 +767,26 @@
             }
         }
         
+        // ====================================================================
+        // WARNING: STALE DUPLICATES -- these do not test the real application.
+        //
+        // This page never loads script.js. The two functions below are private
+        // copies that have now diverged from the shipping code:
+        //
+        //   * extractJobKeywords() was replaced by extractJobRequirements() in
+        //     scoring.js, which returns { skills, requiredYears } instead of a
+        //     flat keyword array, matches with word boundaries (so 'java' no
+        //     longer matches 'javascript'), and no longer folds a synthetic
+        //     "N years experience" pseudo-keyword into the skill list.
+        //   * calculateAIScore() in scoring.js scores experience against the
+        //     job's stated requirement and caps bonus-only scores at 50.
+        //
+        // Any result this page reports about scoring describes THIS file, not
+        // the app. To make these tests meaningful, delete both copies, add
+        // <script src="scoring.js"></script> above, and call the real
+        // functions. Until then treat this page as a demo.
+        // ====================================================================
+
         // Helper functions (simplified versions of main app functions)
         function extractJobKeywords(text) {
             const techKeywords = [
