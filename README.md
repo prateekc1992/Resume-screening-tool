@@ -19,13 +19,16 @@ A comprehensive browser-based resume screening application that automates the pr
 - **Job Requirement Analysis**: Reads requirement terms *out of the job
   description*, so terms nobody put on a list still count, and reads the stated
   years-of-experience requirement
-- **Match Scoring**: Keyword-and-rules scoring (see below) -- not machine learning
+- **Keyword Scoring**: Keyword-and-rules scoring (see below) -- not machine learning
 - **Progress Tracking**: The extraction bar tracks real page-by-page progress
 
 ### 🔍 Step 3: Advanced Screening
 - **Interactive Candidate Table**: Click any column header to sort (keyboard
   accessible; `aria-sort` is maintained)
-- **Hyperlinked Names**: Click a candidate name to read their extracted resume
+- **Candidate detail**: Click a name for a structured summary -- headline,
+  contact details, keyword score, experience with its provenance, degree level,
+  which requirements were met and which were not, and other skills detected. The
+  full extracted text sits behind a toggle rather than filling the panel
 - **Advanced Filtering System**: Filter by experience, education, skills, match
   score, and status. Filters and the search box compose -- using one no longer
   discards the other
@@ -100,7 +103,7 @@ order (`scoring.js` -> `pdf-extract.js` -> `resume-parser.js` -> `script.js`).
 2. **Use Filters**: Click "Advanced Filters" to narrow down candidates by:
    - Years of experience (min/max range)
    - Education level (Bachelor's, Master's, PhD, Diploma)
-   - AI match score (percentage threshold)
+   - Keyword score (percentage threshold)
    - Required skills (from job description)
    - Current status (pending, cleared, rejected)
 3. **Search**: Use the search box for quick candidate lookup
@@ -132,8 +135,9 @@ any of them.** Scores recompute immediately. Treat that panel as part of the
 workflow: a posting that names its employer and client will offer those as
 requirements, and dropping them sharpens the ranking.
 
-### Match Scoring
-Deterministic keyword-and-rules scoring, not a model. `calculateAIScore()` in
+### Keyword Scoring
+Deterministic keyword-and-rules scoring, not a model -- which is why the UI
+calls it a keyword score rather than an AI score. `calculateKeywordScore()` in
 `scoring.js` awards:
 - **10 points per required skill** the candidate demonstrates, in their skills
   list or anywhere in their resume text
@@ -195,7 +199,7 @@ feeds both job-description parsing and resume skill extraction.
 - Add technologies to `SKILL_VOCABULARY` in `scoring.js` for better aliasing and
   casing; you do not need to add a term for it to be scored, because
   `mineJobDescriptionTerms()` picks up whatever the description states
-- Adjust the weights in `calculateAIScore()` (`scoring.js`) to change scoring
+- Adjust the weights in `calculateKeywordScore()` (`scoring.js`) to change scoring
 - Tune `isResumeStart()` / `looksLikeResume()` in `resume-parser.js` if your
   bulk PDFs are laid out unusually
 

@@ -14,7 +14,7 @@ let filteredCandidates = [];
 let currentStep = 1;
 
 // Current sort. The table starts on score, best first.
-let sortState = { key: 'aiScore', dir: 'desc' };
+let sortState = { key: 'keywordScore', dir: 'desc' };
 
 // Active advanced-filter selections, kept so that filtering and searching
 // compose instead of overwriting each other.
@@ -206,7 +206,7 @@ async function startProcessing() {
     try {
         await processResumeExtraction();
         await processJobAnalysis();
-        await processAIScoring();
+        await processKeywordScoring();
 
         showProcessingSummary();
         document.getElementById('viewResultsBtn').disabled = false;
@@ -266,11 +266,11 @@ async function processJobAnalysis() {
     updateProcessingStatus('jobAnalysisStatus', 'success');
 }
 
-async function processAIScoring() {
+async function processKeywordScoring() {
     updateProcessingStatus('scoringStatus', 'processing');
 
     candidates.forEach(candidate => {
-        candidate.aiScore = calculateAIScore(candidate, jobRequirements);
+        candidate.keywordScore = calculateKeywordScore(candidate, jobRequirements);
     });
 
     setProgress('scoringProgress', 100);
@@ -301,7 +301,7 @@ function setProgress(progressId, percent) {
 
 function showProcessingSummary() {
     const summary = document.getElementById('processingSummary');
-    const avgScore = candidates.reduce((sum, c) => sum + c.aiScore, 0) / candidates.length;
+    const avgScore = candidates.reduce((sum, c) => sum + c.keywordScore, 0) / candidates.length;
 
     document.getElementById('candidateCount').textContent = candidates.length;
     document.getElementById('keywordCount').textContent = jobRequirements.skills.length;
@@ -386,10 +386,10 @@ function removeRequirement(skill) {
     jobRequirements.skills = (jobRequirements.skills || []).filter(s => s !== skill);
     if (jobRequirements.skillSources) delete jobRequirements.skillSources[skill];
 
-    candidates.forEach(c => { c.aiScore = calculateAIScore(c, jobRequirements); });
+    candidates.forEach(c => { c.keywordScore = calculateKeywordScore(c, jobRequirements); });
 
     const avg = candidates.length
-        ? Math.round(candidates.reduce((s, c) => s + c.aiScore, 0) / candidates.length)
+        ? Math.round(candidates.reduce((s, c) => s + c.keywordScore, 0) / candidates.length)
         : 0;
     document.getElementById('keywordCount').textContent = jobRequirements.skills.length;
     document.getElementById('avgScore').textContent = avg + '%';
@@ -509,8 +509,15 @@ function createCandidateRow(candidate) {
     nameCell.appendChild(link);
     row.appendChild(nameCell);
 
-    row.appendChild(badgeCell('experience-badge', candidate.experience + ' years'));
-    row.appendChild(badgeCell('education-badge', candidate.education));
+    row.appendChild(badgeCell('experience-badge',
+        candidate.experience + (candidate.experience === 1 ? ' year' : ' years')));
+
+    // Compact label in the column, full degree line on hover. Real degree lines
+    // carry institutions, years and grades, which makes the column unreadable.
+    const eduCell = badgeCell('education-badge',
+        candidate.educationSummary || candidate.education);
+    eduCell.title = candidate.education;
+    row.appendChild(eduCell);
 
     // Skills: first three plus an overflow count
     const skillsCell = document.createElement('td');
@@ -532,7 +539,7 @@ function createCandidateRow(candidate) {
     skillsCell.appendChild(skillsWrap);
     row.appendChild(skillsCell);
 
-    row.appendChild(badgeCell('score-badge ' + getScoreClass(candidate.aiScore), candidate.aiScore + '%'));
+    row.appendChild(badgeCell('score-badge ' + getScoreClass(candidate.keywordScore), candidate.keywordScore + '%'));
     row.appendChild(badgeCell('status-badge status-' + candidate.status, candidate.status));
 
     // Actions
@@ -583,7 +590,7 @@ function toggleSort(key) {
         sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
     } else {
         // Text ascends, numbers descend, on first click.
-        sortState = { key: key, dir: (key === 'experience' || key === 'aiScore') ? 'desc' : 'asc' };
+        sortState = { key: key, dir: (key === 'experience' || key === 'keywordScore') ? 'desc' : 'asc' };
     }
     renderCandidatesTable();
     updateSortIndicators();
@@ -736,7 +743,7 @@ function readFilterForm() {
 function matchesFilters(candidate, filters) {
     if (candidate.experience < filters.minExperience) return false;
     if (candidate.experience > filters.maxExperience) return false;
-    if (candidate.aiScore < filters.minScore) return false;
+    if (candidate.keywordScore < filters.minScore) return false;
 
     if (filters.education.length > 0) {
         const education = candidate.education.toLowerCase();
@@ -793,33 +800,143 @@ function closeFilterModal() {
     document.getElementById('filterModal').classList.remove('show');
 }
 
+// Candidate detail: a structured summary of what was parsed, with the raw
+// extracted text available but tucked away.
+//
+// Everything here is set with textContent, never innerHTML, because every value
+// originates in an uploaded PDF.
 function showResumeModal(candidateId) {
     const candidate = candidates.find(c => c.id === candidateId);
     if (!candidate) return;
 
-    document.getElementById('resumeModalTitle').textContent = candidate.name + ' - Resume';
+    document.getElementById('resumeModalTitle').textContent = candidate.name;
 
-    // <pre> + textContent: keeps the extracted line structure readable and
-    // cannot execute anything the PDF contained.
     const container = document.getElementById('resumeContent');
     container.innerHTML = '';
 
-    const meta = document.createElement('p');
-    meta.className = 'resume-meta';
-    meta.textContent = [
-        candidate.email,
-        candidate.phone,
-        candidate.experience + ' years experience',
-        candidate.education
-    ].filter(Boolean).join('  |  ');
-    container.appendChild(meta);
+    // --- Headline and contact details ---
+    if (candidate.headline) {
+        const headline = document.createElement('p');
+        headline.className = 'cd-headline';
+        headline.textContent = candidate.headline;
+        container.appendChild(headline);
+    }
 
-    const body = document.createElement('pre');
-    body.className = 'resume-text';
-    body.textContent = candidate.resumeText;
-    container.appendChild(body);
+    const contactBits = [];
+    if (candidate.email) contactBits.push({ icon: 'fa-envelope', text: candidate.email });
+    if (candidate.phone) contactBits.push({ icon: 'fa-phone', text: candidate.phone });
+    if (contactBits.length > 0) {
+        const contact = document.createElement('p');
+        contact.className = 'cd-contact';
+        contactBits.forEach((bit, i) => {
+            if (i > 0) contact.appendChild(document.createTextNode('   '));
+            const icon = document.createElement('i');
+            icon.className = 'fas ' + bit.icon;
+            contact.appendChild(icon);
+            contact.appendChild(document.createTextNode(' ' + bit.text));
+        });
+        container.appendChild(contact);
+    }
+
+    // --- Key parameters ---
+    const tiles = document.createElement('div');
+    tiles.className = 'cd-tiles';
+    tiles.appendChild(detailTile('Keyword Score', candidate.keywordScore + '%',
+        getScoreClass(candidate.keywordScore)));
+    tiles.appendChild(detailTile('Experience',
+        candidate.experience + (candidate.experience === 1 ? ' year' : ' years'),
+        '', candidate.experienceSource === 'stated'
+            ? 'Stated on the resume'
+            : candidate.experienceSource === 'dates'
+                ? 'Totalled from dated roles'
+                : 'Could not be determined'));
+    tiles.appendChild(detailTile('Education', candidate.educationLevel || 'Not specified',
+        '', candidate.education));
+    tiles.appendChild(detailTile('Status', candidate.status, 'status-' + candidate.status));
+    container.appendChild(tiles);
+
+    // --- Requirement match ---
+    const required = jobRequirements.skills || [];
+    if (required.length > 0) {
+        const matched = candidate.matchedSkills || [];
+        const missing = required.filter(s => matched.indexOf(s) === -1);
+
+        container.appendChild(detailSection(
+            'Requirements met (' + matched.length + ' of ' + required.length + ')',
+            matched, 'cd-tag-match', 'No requirements were evidenced in this resume.'));
+        container.appendChild(detailSection(
+            'Not evidenced (' + missing.length + ')',
+            missing, 'cd-tag-missing', 'Every requirement was evidenced.'));
+    }
+
+    // --- Everything else detected ---
+    const extras = (candidate.skills || []).filter(s => (candidate.matchedSkills || []).indexOf(s) === -1);
+    if (extras.length > 0) {
+        container.appendChild(detailSection(
+            'Other skills detected (' + extras.length + ')', extras, 'cd-tag-other', ''));
+    }
+
+    // --- Raw text, collapsed ---
+    const details = document.createElement('details');
+    details.className = 'cd-raw';
+    const toggle = document.createElement('summary');
+    toggle.textContent = 'Full extracted text';
+    details.appendChild(toggle);
+    const pre = document.createElement('pre');
+    pre.className = 'resume-text';
+    pre.textContent = candidate.resumeText;
+    details.appendChild(pre);
+    container.appendChild(details);
 
     document.getElementById('resumeModal').classList.add('show');
+}
+
+function detailTile(label, value, valueClass, hint) {
+    const tile = document.createElement('div');
+    tile.className = 'cd-tile';
+    if (hint) tile.title = hint;
+
+    const l = document.createElement('div');
+    l.className = 'cd-tile-label';
+    l.textContent = label;
+    tile.appendChild(l);
+
+    const v = document.createElement('div');
+    v.className = 'cd-tile-value' + (valueClass ? ' ' + valueClass : '');
+    v.textContent = value;
+    tile.appendChild(v);
+
+    return tile;
+}
+
+function detailSection(heading, items, tagClass, emptyText) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cd-section';
+
+    const h = document.createElement('h5');
+    h.textContent = heading;
+    wrap.appendChild(h);
+
+    if (items.length === 0) {
+        if (emptyText) {
+            const p = document.createElement('p');
+            p.className = 'cd-empty';
+            p.textContent = emptyText;
+            wrap.appendChild(p);
+        }
+        return wrap;
+    }
+
+    const tags = document.createElement('div');
+    tags.className = 'cd-tags';
+    items.forEach(item => {
+        const tag = document.createElement('span');
+        tag.className = 'cd-tag ' + tagClass;
+        tag.textContent = item;
+        tags.appendChild(tag);
+    });
+    wrap.appendChild(tags);
+    return wrap;
 }
 
 function closeResumeModal() {
@@ -851,7 +968,7 @@ function exportClearedCandidates() {
         'Experience (Years)': candidate.experience,
         'Education': candidate.education,
         'Key Skills': candidate.skills.join(', '),
-        'AI Score (%)': candidate.aiScore,
+        'Keyword Score (%)': candidate.keywordScore,
         'Status': candidate.status
     }));
 
@@ -891,7 +1008,7 @@ function loadSampleData() {
     }
 
     jobRequirements = extractJobRequirements(jobDescriptionText);
-    candidates.forEach(c => { c.aiScore = calculateAIScore(c, jobRequirements); });
+    candidates.forEach(c => { c.keywordScore = calculateKeywordScore(c, jobRequirements); });
 
     showMessage('Loaded ' + candidates.length + ' sample candidates. This is demo data, not a real screening.', 'info');
     goToStep(3);

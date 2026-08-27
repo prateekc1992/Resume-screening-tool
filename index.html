@@ -139,8 +139,8 @@
                             <i class="fas fa-chart-line"></i>
                         </div>
                         <div class="processing-content">
-                            <h3>Calculating AI Scores</h3>
-                            <p>Comparing candidates against job requirements</p>
+                            <h3>Calculating Keyword Scores</h3>
+                            <p>Matching candidates against the requirements read from the job description</p>
                             <div class="progress-bar">
                                 <div class="progress-fill" id="scoringProgress"></div>
                             </div>
@@ -236,7 +236,7 @@
                             <th class="sortable" data-sort-key="experience" tabindex="0" role="button" aria-sort="none">Experience <i class="fas fa-sort sort-icon"></i></th>
                             <th class="sortable" data-sort-key="education" tabindex="0" role="button" aria-sort="none">Education <i class="fas fa-sort sort-icon"></i></th>
                             <th>Key Skills</th>
-                            <th class="sortable" data-sort-key="aiScore" tabindex="0" role="button" aria-sort="descending">AI Score <i class="fas fa-sort sort-icon"></i></th>
+                            <th class="sortable" data-sort-key="keywordScore" tabindex="0" role="button" aria-sort="descending">Keyword Score <i class="fas fa-sort sort-icon"></i></th>
                             <th class="sortable" data-sort-key="status" tabindex="0" role="button" aria-sort="none">Status <i class="fas fa-sort sort-icon"></i></th>
                             <th>Actions</th>
                         </tr>
@@ -289,7 +289,7 @@
                 </div>
 
                 <div class="filter-section" id="filterScore">
-                    <h4>AI Score</h4>
+                    <h4>Keyword Score</h4>
                     <div class="filter-group">
                         <label>Minimum Score (%):</label>
                         <input type="range" id="minScore" min="0" max="100" value="0">

@@ -438,6 +438,9 @@ function extractJobRequirements(text) {
 
 // Score one candidate against the job requirements. Returns 0-100.
 //
+// This is keyword-and-rules matching, not a model. The UI calls it a keyword
+// score for that reason.
+//
 // Breakdown:
 //   skill match  -- 10 points per required skill the candidate demonstrates
 //   experience   -- up to 20 bonus points
@@ -446,7 +449,7 @@ const EXPERIENCE_BONUS_MAX = 20;
 const EDUCATION_BONUS_MAX = 15;
 const BONUS_POOL = EXPERIENCE_BONUS_MAX + EDUCATION_BONUS_MAX;
 
-function calculateAIScore(candidate, requirements) {
+function calculateKeywordScore(candidate, requirements) {
     // Tolerate the old array-shaped argument so a stale caller degrades
     // predictably instead of throwing.
     const req = Array.isArray(requirements)

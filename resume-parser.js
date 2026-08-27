@@ -3,7 +3,7 @@
 // Exposes parseCandidates(pageTexts) -> Candidate[], where Candidate matches
 // the shape the rest of the app already expects:
 //   { id, name, experience, education, skills, resumeText, status }
-// (aiScore is added later by the scoring pass.)
+// (keywordScore is added later by the scoring pass.)
 //
 // Depends on findSkillsInText() from scoring.js.
 
@@ -480,10 +480,121 @@ function yearsFromDateRanges(text, excludeDegreeLines) {
     return Math.round(months / 12);
 }
 
+// The professional headline a resume prints under the name -- "Senior Full
+// Stack Developer", "Healthcare Operations & Hospital Executive Leader". Useful
+// context in the candidate detail view, where a job title says more at a glance
+// than a skills list.
+function extractHeadline(text, name) {
+    const lines = nonEmptyLines(text).slice(0, 6);
+    for (let i = 0; i < lines.length; i++) {
+        const line = cleanNameCandidate(lines[i]);
+        if (!line || line.length > 90) continue;
+        if (name && line.toLowerCase() === name.toLowerCase()) continue;
+        if (line.indexOf('@') !== -1) continue;
+        if (/https?:|www\.|linkedin/i.test(line)) continue;
+        if (isSectionHeading(line) || isOpeningSectionLine(line)) continue;
+        if (PERSONAL_FIELD_WORDS.test(line)) continue;
+        // A headline reads as a role, so require a role word and no contact digits.
+        if (!JOB_TITLE_WORDS.test(line)) continue;
+        if (PHONE_RE.test(line)) continue;
+        return line;
+    }
+    return '';
+}
+
+// A short education label for the table: the degree level plus its field where
+// one can be pulled out. The full string stays on the candidate for filtering
+// and for the detail view -- real resumes print degree lines with institutions,
+// enrolment years and grades attached, which makes a table column unreadable.
+const DEGREE_TOKEN_RE = /\b(?:bachelor(?:'|’)?s?|master(?:'|’)?s?|phd|ph\.?\s?d\.?|doctorate|diploma|b\.?tech|m\.?tech|b\.?sc\.?|m\.?sc\.?|b\.?e\.?|m\.?e\.?|b\.?a\.?|m\.?a\.?|mba|bca|mca|mph|b\.?pharm|degree|of|in)\b/gi;
+
+function summariseEducation(fullText, level) {
+    if (!level) return fullText === 'Not specified' ? 'Not specified' : fullText;
+
+    // Drop the institution/year tail before looking for the subject, so that
+    // "Master of Science in Computer Science, University of Delhi" does not
+    // yield "Delhi" from its final "of".
+    let head = fullText
+        .replace(/[,|(\[].*$/, '')
+        .replace(/\b(19|20)\d{2}\b.*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const subject = subjectAfterConnector(head) || subjectAfterDegreeTokens(head, level);
+    if (!subject) return level;
+
+    let clean = subject
+        // A trailing month is the start of a date range, not part of the subject.
+        .replace(/\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    // Reject fragments that are clearly not a field of study: "1st Div",
+    // "2nd Class", anything carrying digits.
+    if (/\d/.test(clean)) return level;
+    if (clean.replace(/[^A-Za-z]/g, '').length < 4) return level;
+
+    if (clean.length > 34) clean = clean.slice(0, 31).replace(/\s+\S*$/, '') + '...';
+
+    // Normalise shouty tokens so the column does not shout.
+    clean = clean.split(/\s+/).map(word =>
+        (word.length > 2 && word === word.toUpperCase() && /^[A-Z]+$/.test(word))
+            ? word.charAt(0) + word.slice(1).toLowerCase()
+            : word
+    ).join(' ');
+
+    return level + ' in ' + clean;
+}
+
+// "Master of Science in Computer Science" -> "Computer Science".
+// Uses the LAST connector, because the subject follows the degree phrase.
+function subjectAfterConnector(head) {
+    const connector = /\b(?:in|of)\s+/gi;
+    let last = -1, m;
+    while ((m = connector.exec(head)) !== null) last = m.index + m[0].length;
+    if (last === -1) return '';
+    const tail = head.slice(last).trim();
+    // Reject a tail that is itself another degree word.
+    return /^(?:science|arts|technology|engineering)$/i.test(tail) ? tail : tail;
+}
+
+// "Master's - M.Sc. Big Data Analytics - St Xavier's" -> "Big Data Analytics".
+// Fallback for degree lines written without an "in"/"of" connector.
+function subjectAfterDegreeTokens(head, level) {
+    let rest = head
+        .replace(new RegExp('^\\s*' + level.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–—:]?\\s*', 'i'), '')
+        // An en/em dash separates the subject from the institution.
+        .replace(/\s[–—]\s.*$/, '')
+        .replace(DEGREE_TOKEN_RE, ' ')
+        .replace(/[-:.]/g, ' ')
+        .replace(/\s+/g, ' ')
+        // A stray single letter is a leftover list marker ("o", "x"), not a word.
+        .replace(/^[a-z]\s+/i, '')
+        .trim();
+    if (rest.split(/\s+/).length > 6) rest = rest.split(/\s+/).slice(0, 6).join(' ');
+    return rest;
+}
+
 // Highest degree found, as a string that stays compatible with applyFilters()
 // -- which tests education.toLowerCase().includes('bachelor'|'master'|'phd'|
 // 'diploma'), so the canonical keyword must appear in the returned text.
 function extractEducation(text, sections) {
+    const best = findBestDegree(text, sections);
+    if (!best) return 'Not specified';
+    return formatDegreeLine(best);
+}
+
+// The canonical level label ("Master's"), or '' when no degree was detected.
+// Kept separate so the table can show a compact label while filtering keeps
+// working against the full string.
+function detectEducationLevel(text, sections) {
+    const best = findBestDegree(text, sections);
+    return best ? best.level.label : '';
+}
+
+// Highest-ranked degree mention in the education section, or the whole document
+// when no such section was found.
+function findBestDegree(text, sections) {
     const scope = sections.education || text;
     const lines = nonEmptyLines(scope);
 
@@ -511,8 +622,10 @@ function extractEducation(text, sections) {
         }
     }
 
-    if (!best) return 'Not specified';
+    return best;
+}
 
+function formatDegreeLine(best) {
     // Tidy the matched line for display. Real resumes prefix degrees with list
     // markers and append grades, which end up in the table and the Excel export.
     let detail = best.line
@@ -597,15 +710,23 @@ function parseCandidates(pageTexts) {
         const email = emailMatch ? emailMatch[0] : '';
         const phoneMatch = text.match(PHONE_RE);
         const experience = extractExperience(text, sections);
+        const name = extractName(text, email, candidates.length + 1);
+        const education = extractEducation(text, sections);
+        const educationLevel = detectEducationLevel(text, sections);
 
         candidates.push({
             id: candidates.length + 1,
-            name: extractName(text, email, candidates.length + 1),
+            name: name,
+            headline: extractHeadline(text, name),
             email: email,
             phone: phoneMatch ? phoneMatch[0] : '',
             experience: experience.years,
-            experienceSource: experience.source, // kept for debugging
-            education: extractEducation(text, sections),
+            experienceSource: experience.source,
+            education: education,
+            educationLevel: educationLevel,
+            // Short form for the table; `education` keeps the full line, which
+            // filtering matches against.
+            educationSummary: summariseEducation(education, educationLevel),
             skills: extractSkills(text, sections),
             resumeText: text,
             status: 'pending'
